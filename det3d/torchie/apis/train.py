@@ -4,11 +4,16 @@ import re
 from collections import OrderedDict, defaultdict
 from functools import partial
 
-import apex
+try:
+    import apex
+except:
+    print("No APEX!")
+
 import numpy as np
 import torch
 from det3d.builder import _create_learning_rate_scheduler
 
+# from det3d.datasets.kitti.eval_hooks import KittiDistEvalmAPHook, KittiEvalmAPHookV2
 from det3d.core import DistOptimizerHook
 from det3d.datasets import DATASETS, build_dataloader
 from det3d.solver.fastai_optim import OptimWrapper
@@ -19,6 +24,126 @@ from torch.nn.parallel import DistributedDataParallel
 
 from .env import get_root_logger
 
+
+def example_to_device(example, device=None, non_blocking=False) -> dict:
+    assert device is not None
+
+    example_torch = {}
+    float_names = ["voxels", "bev_map"]
+    for k, v in example.items():
+        if k in ["anchors", "anchors_mask", "reg_targets", "reg_weights", "labels"]:
+            example_torch[k] = [res.to(device, non_blocking=non_blocking) for res in v]
+        elif k in [
+            "voxels",
+            "bev_map",
+            "coordinates",
+            "num_points",
+            "points",
+            "num_voxels",
+            "cyv_voxels",
+            "cyv_num_voxels",
+            "cyv_coordinates",
+            "cyv_num_points"
+        ]:
+            example_torch[k] = v.to(device, non_blocking=non_blocking)
+        elif k == "calib":
+            calib = {}
+            for k1, v1 in v.items():
+                # calib[k1] = torch.tensor(v1, dtype=dtype, device=device)
+                calib[k1] = torch.tensor(v1).to(device, non_blocking=non_blocking)
+            example_torch[k] = calib
+        else:
+            example_torch[k] = v
+
+    return example_torch
+
+
+def parse_losses(losses):
+    log_vars = OrderedDict()
+    for loss_name, loss_value in losses.items():
+        if isinstance(loss_value, torch.Tensor):
+            log_vars[loss_name] = loss_value.mean()
+        elif isinstance(loss_value, list):
+            log_vars[loss_name] = sum(_loss.mean() for _loss in loss_value)
+        else:
+            raise TypeError("{} is not a tensor or list of tensors".format(loss_name))
+
+    loss = sum(_value for _key, _value in log_vars.items() if "loss" in _key)
+
+    log_vars["loss"] = loss
+    for name in log_vars:
+        log_vars[name] = log_vars[name].item()
+
+    return loss, log_vars
+
+
+def parse_second_losses(losses):
+
+    log_vars = OrderedDict()
+    loss = sum(losses["loss"])
+    for loss_name, loss_value in losses.items():
+        if loss_name == "loc_loss_elem":
+            log_vars[loss_name] = [[i.item() for i in j] for j in loss_value]
+        else:
+            log_vars[loss_name] = [i.item() for i in loss_value]
+
+    return loss, log_vars
+
+
+def batch_processor(model, data, train_mode, **kwargs):
+
+    if "local_rank" in kwargs:
+        device = torch.device(kwargs["local_rank"])
+    else:
+        device = None
+
+    # data = example_convert_to_torch(data, device=device)
+    example = example_to_device(data, device, non_blocking=False)
+
+    del data
+
+    if train_mode:
+        losses = model(example, return_loss=True)
+        loss, log_vars = parse_second_losses(losses)
+
+        outputs = dict(
+            loss=loss, log_vars=log_vars, num_samples=len(example["anchors"][0])
+        )
+        return outputs
+    else:
+        return model(example, return_loss=False)
+
+def batch_processor_ensemble(model1, model2, data, train_mode, **kwargs):
+    assert 0, 'deprecated'
+    if "local_rank" in kwargs:
+        device = torch.device(kwargs["local_rank"])
+    else:
+        device = None
+
+    assert train_mode is False 
+
+    example = example_to_device(data, device, non_blocking=False)
+    del data
+
+    preds_dicts1 = model1.pred_hm(example)
+    preds_dicts2 = model2.pred_hm(example)
+    
+    num_task = len(preds_dicts1)
+
+    merge_list = []
+
+    # take the average
+    for task_id in range(num_task):
+        preds_dict1 = preds_dicts1[task_id]
+        preds_dict2 = preds_dicts2[task_id]
+
+        for key in preds_dict1.keys():
+            preds_dict1[key] = (preds_dict1[key] + preds_dict2[key]) / 2
+
+        merge_list.append(preds_dict1)
+
+    # now get the final prediciton 
+    return model1.pred_result(example, merge_list)
 
 
 def flatten_model(m):
@@ -39,7 +164,7 @@ def build_one_cycle_optimizer(model, optimizer_config):
 
     optimizer = OptimWrapper.create(
         optimizer_func,
-        3e-3,
+        3e-3,   # TODO: CHECKING LR HERE !!!
         get_layer_groups(model),
         wd=optimizer_config.wd,
         true_wd=optimizer_config.fixed_wd,
@@ -140,7 +265,8 @@ def train_detector(model, dataset, cfg, distributed=False, validate=False, logge
 
     total_steps = cfg.total_epochs * len(data_loaders[0])
     # print(f"total_steps: {total_steps}")
-
+    if distributed:
+        model = apex.parallel.convert_syncbn_model(model)
     if cfg.lr_config.type == "one_cycle":
         # build trainer
         optimizer = build_one_cycle_optimizer(model, cfg.optimizer)
@@ -150,23 +276,12 @@ def train_detector(model, dataset, cfg, distributed=False, validate=False, logge
         cfg.lr_config = None
     else:
         optimizer = build_optimizer(model, cfg.optimizer)
-        lr_scheduler = None
-        #lr_scheduler = _create_learning_rate_scheduler(
-        #    optimizer, cfg.lr_config, total_steps
-        #)
+        lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=cfg.drop_step, gamma=.1)
+        # lr_scheduler = None
+        cfg.lr_config = None 
 
     # put model on gpus
     if distributed:
-        if cfg.use_syncbn:
-            model = apex.parallel.convert_syncbn_model(model)
-
-        #model, optimizer = apex.amp.initialize(model, optimizer,
-        #                              opt_level=args.opt_level,
-        #                              keep_batchnorm_fp32=True,
-        #                              loss_scale=args.loss_scale
-        #                              )
-        #model = apex.parallel.DistributedDataParallel(model.cuda())
-        
         model = DistributedDataParallel(
             model.cuda(cfg.local_rank),
             device_ids=[cfg.local_rank],
@@ -174,12 +289,14 @@ def train_detector(model, dataset, cfg, distributed=False, validate=False, logge
             # broadcast_buffers=False,
             find_unused_parameters=True,
         )
-        
     else:
         model = model.cuda()
 
     logger.info(f"model structure: {model}")
 
+    # # trainer = Trainer(
+    #     model, batch_processor, optimizer, lr_scheduler, cfg.work_dir, cfg.log_level
+    # )
     trainer = Trainer(
         model, optimizer, lr_scheduler, cfg.work_dir, cfg.log_level
     )
@@ -197,6 +314,13 @@ def train_detector(model, dataset, cfg, distributed=False, validate=False, logge
     if distributed:
         trainer.register_hook(DistSamplerSeedHook())
 
+    # # register eval hooks
+    # if validate:
+    #     val_dataset_cfg = cfg.data.val
+    #     eval_cfg = cfg.get('evaluation', {})
+    #     dataset_type = DATASETS.get(val_dataset_cfg.type)
+    #     trainer.register_hook(
+    #         KittiEvalmAPHookV2(val_dataset_cfg, **eval_cfg))
 
     if cfg.resume_from:
         trainer.resume(cfg.resume_from)

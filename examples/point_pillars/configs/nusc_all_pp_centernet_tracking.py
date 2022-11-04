@@ -89,7 +89,7 @@ data_root = "data/v1.0-trainval"
 db_sampler = dict(
     type="GT-AUG",
     enable=True, 
-    db_info_path="data/v1.0-trainval/dbinfos_train_1sweeps.pkl",
+    db_info_path="data/nuscenes/dbinfos_train_1sweeps.pkl",
     sample_groups=[
         dict(car=2),
         dict(truck=3),
@@ -170,8 +170,8 @@ test_pipeline = [
     dict(type="Reformat"),
 ]
 
-train_anno = "data/v1.0-trainval/infos_train_10sweeps_tracking.pkl"
-val_anno = "data/v1.0-trainval/infos_val_10sweeps_tracking.pkl"
+train_anno = "data/nuscenes/infos_train_10sweeps_tracking.pkl"
+val_anno = "data/nuscenes/infos_val_10sweeps_tracking.pkl"
 test_anno = None
 
 data = dict(

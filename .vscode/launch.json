@@ -1,0 +1,53 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Python: dist_test.py pointnet",
+            "type": "python",
+            "request": "launch",
+            "program": "tools/dist_test.py",
+            "args": [
+                "examples/point_pillars/configs/nusc_all_pp_centernet_tracking.py",
+                "--work_dir", "work_dirs/point_pillars/",
+                "--checkpoint", "/home/ajinkya/repos/simtrack/model_zoo/simtrack_pillar.pth",
+            ],
+            "justMyCode": false,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Python: train.py pointnet",
+            "type": "python",
+            "request": "launch",
+            "program": "tools/train.py",
+            "args": [
+                "examples/point_pillars/configs/nusc_all_pp_centernet_tracking.py",
+                "--work_dir", "work_dirs/point_pillars/",
+            ],
+            "justMyCode": false,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Python: val_nus_tracking",
+            "type": "python",
+            "request": "launch",
+            "program": "./tools/val_nusc_tracking.py",
+            "args": [
+                "examples/point_pillars/configs/nusc_all_pp_centernet_tracking.py",
+                "--checkpoint", "model_zoo/simtrack_pillar.pth",
+                "--work_dir", "work_dirs/point_pillars"
+            ],
+            "justMyCode": false,
+            "console": "integratedTerminal"
+        },
+    ]
+}

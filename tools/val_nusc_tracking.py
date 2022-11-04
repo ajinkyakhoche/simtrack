@@ -63,7 +63,7 @@ def tracking():
     cpu_device = torch.device("cpu")
 
     prev_detections = {}
-    nusc = NuScenes(version='v1.0-trainval', dataroot='./data/v1.0-trainval/', verbose=True)
+    nusc = NuScenes(version='v1.0-trainval', dataroot='./data/nuscenes/', verbose=True)
     grids = meshgrid(size_w, size_h)
 
     start_id = 0
